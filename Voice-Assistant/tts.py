@@ -1,18 +1,19 @@
 import subprocess
-from unittest import result
 
 
-def voice(text): 
+def voice(text, language):
+    switcher = {
+        "en": "en_US-lessac-medium.onnx",
+        "ru": "ru_RU-dmitri-medium.onnx",
+        "lv": "lv_LV-aivars-medium.onnx"
+    } 
+    model = switcher.get(language, "en_US-lessac-medium.onnx")
     result = subprocess.run(
         [
         "piper",
-        "--model", "en_US-lessac-medium.onnx",
-        "--output_file", "output.wav"
+        "--model",
+        model,
         ],
         input=text.encode("utf-8"),
         capture_output=True
     )
-
-    print(result.stderr.decode())
-
-voice("Hello, this is a test of the text-to-speech function.")

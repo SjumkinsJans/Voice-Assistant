@@ -3,23 +3,29 @@ import wave
 import datetime
 from array import array
 from struct import pack
-from faster_whisper import WhisperModel
+import numpy as np
+import openwakeword
+from openwakeword.model import Model
 
-def record(outputFile):
-    CHUNK = 1024
-    FORMAT = pyaudio.paInt16
-    CHANNELS = 1
-    RATE = 44100
-    RECORD_SECONDS = 3
+def record(outputFile,stream,stream_setting,model,p):
+    CHUNK = stream_setting["frames_per_buffer"]
+    RATE = stream_setting["rate"]
+    RECORD_SECONDS = stream_setting["record_seconds"]
+    CHANNELS = stream_setting["channels"]
+    FORMAT = stream_setting["format"]
 
-    p = pyaudio.PyAudio()
+    while True:
+        data = stream.read(CHUNK, exception_on_overflow=False)
+        frame = np.frombuffer(data, dtype=np.int16)
+        prediction = model.predict(frame)
 
-    stream = p.open(format=FORMAT,
-                    channels=CHANNELS,
-                    rate=RATE,
-                    input=True,
-                    frames_per_buffer=CHUNK)
-
+        
+        if prediction['hey_jarvis'] > 0.6:
+            return 0
+        if prediction['alexa'] > 0.7:
+            print("Wake word detected!")
+            model = Model()
+            break
     print("* recording")
 
     frames = []
@@ -30,9 +36,9 @@ def record(outputFile):
 
     print("* done recording")
 
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
+    #stream.stop_stream()
+    #stream.close()
+    #p.terminate()
 
     wf = wave.open(outputFile, 'wb')
     wf.setnchannels(CHANNELS)
@@ -42,4 +48,20 @@ def record(outputFile):
     wf.close()
 
 def play(filename):
-    print(f"Playing {filename}...")
+    wf = wave.open(filename, 'rb')
+    p = pyaudio.PyAudio()
+    CHUNK = 1280
+
+    p = pyaudio.PyAudio()
+
+    stream = p.open(format=p.get_format_from_width(wf.getsampwidth()),
+                    channels=wf.getnchannels(),
+                    rate=wf.getframerate(),
+                    output=True)
+    data = wf.readframes(CHUNK)
+    while len(data) > 0:
+        stream.write(data)
+        data = wf.readframes(CHUNK)
+    stream.stop_stream()
+    stream.close()
+    p.terminate()

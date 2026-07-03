@@ -1,4 +1,5 @@
 # Voice-Assistant
-Requires :
-Faster-Whisper
-PyAudio
+Requires :  
+Faster-Whisper  
+PyAudio  
+Piper 

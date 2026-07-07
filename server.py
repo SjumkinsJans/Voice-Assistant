@@ -1,28 +1,15 @@
-"""
-Minimal working round-trip test:
-  phone records -> POST /talk -> transcribe -> speak back "I heard: <text>" -> phone plays it
-
-Install:
-    pip install flask faster-whisper pyttsx3
-
-Run:
-    python server_talk_endpoint.py
-Then from your PHONE (same wifi), browse to:
-    http://<this-machine's-LAN-IP>:5000
-(use ipconfig/ifconfig to find that IP — 127.0.0.1 will NOT work from another device)
-"""
-
 import os
 import string
 import uuid
-from flask import Flask, request, send_file, render_template_string
+import subprocess
+from flask import Flask, request, send_file, render_template_string, jsonify
 from faster_whisper import WhisperModel
 
 from tts import voice
 
 app = Flask(__name__)
 
-# Load the STT model ONCE at startup — loading it per-request would be very slow
+# load whipser model
 whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
 
 UPLOAD_DIR = "uploads"
@@ -34,40 +21,145 @@ os.makedirs(REPLY_DIR, exist_ok=True)
 # ---------- simple test page with record button ----------
 PAGE = """
 <!doctype html>
-<html><body>
-<button id="rec">🎤 Hold to talk</button>
+<html>
+<body>
+
+<h3>Input</h3>
+
+<label>
+    <input id="sendText" type="checkbox">
+    Send text instead of audio
+</label>
+
+<br><br>
+
+<input id="textInput" placeholder="Type message..."
+       style="display:none; width:300px;">
+
+<br><br>
+
+<button id="rec" style="width:120px;height:40px;">
+    Hold to Talk
+</button>
+
+<br><br>
+
+<h3>Output</h3>
+
+<label>
+    <input id="receiveText" type="checkbox">
+    Receive text instead of audio
+</label>
+
 <p id="status"></p>
+<p id="responseText"></p>
+
 <audio id="player" autoplay></audio>
+
 <script>
-let mediaRecorder, chunks = [];
-const btn = document.getElementById('rec');
-const status = document.getElementById('status');
+const recBtn = document.getElementById("rec");
+const sendText = document.getElementById("sendText");
+const receiveText = document.getElementById("receiveText");
+const textInput = document.getElementById("textInput");
+const status = document.getElementById("status");
+const responseText = document.getElementById("responseText");
+const player = document.getElementById("player");
 
-btn.onmousedown = btn.ontouchstart = async () => {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  mediaRecorder = new MediaRecorder(stream);
-  chunks = [];
-  mediaRecorder.ondataavailable = e => chunks.push(e.data);
-  mediaRecorder.start();
-  status.textContent = "Recording...";
+let mediaRecorder;
+let chunks = [];
+
+// Toggle UI
+sendText.onchange = () => {
+    if (sendText.checked) {
+        textInput.style.display = "";
+        recBtn.textContent = "Send";
+    } else {
+        textInput.style.display = "none";
+        recBtn.textContent = "Hold to Talk";
+    }
 };
 
-btn.onmouseup = btn.ontouchend = () => {
-  mediaRecorder.stop();
-  status.textContent = "Sending...";
-  mediaRecorder.onstop = async () => {
-    const blob = new Blob(chunks, { type: 'audio/webm' });
-    const formData = new FormData();
-    formData.append('audio', blob, 'clip.webm');
+// ---------- TEXT MODE ----------
+recBtn.onclick = async () => {
+    if (!sendText.checked) return;
 
-    const response = await fetch('/talk', { method: 'POST', body: formData });
-    const audioBlob = await response.blob();
-    document.getElementById('player').src = URL.createObjectURL(audioBlob);
+    status.textContent = "Sending...";
+
+    const response = await fetch("/talk", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            input_type: "text",
+            output_type: receiveText.checked ? "text" : "audio",
+            text: textInput.value
+        })
+    });
+
+    await handleResponse(response);
+};
+
+// ---------- AUDIO MODE ----------
+recBtn.onmousedown = async () => {
+    if (sendText.checked) return;
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    mediaRecorder = new MediaRecorder(stream);
+    chunks = [];
+
+    mediaRecorder.ondataavailable = e => chunks.push(e.data);
+
+    mediaRecorder.onstop = async () => {
+        status.textContent = "Sending...";
+
+        const blob = new Blob(chunks, { type: "audio/webm" });
+
+        const formData = new FormData();
+        formData.append("audio", blob, "clip.webm");
+        formData.append("input_type", "audio");
+        formData.append(
+            "output_type",
+            receiveText.checked ? "text" : "audio"
+        );
+
+        const response = await fetch("/talk", {
+            method: "POST",
+            body: formData
+        });
+
+        await handleResponse(response);
+    };
+
+    mediaRecorder.start();
+    status.textContent = "Recording...";
+};
+
+recBtn.onmouseup = () => {
+    if (!sendText.checked && mediaRecorder) {
+        mediaRecorder.stop();
+    }
+};
+
+// ---------- RESPONSE ----------
+async function handleResponse(response) {
+    if (receiveText.checked) {
+        const data = await response.json();
+        responseText.textContent = data.text;
+        player.src = "";
+    } else {
+        const audioBlob = await response.blob();
+        player.src = URL.createObjectURL(audioBlob);
+        responseText.textContent = "";
+    }
+
     status.textContent = "Done.";
-  };
-};
+}
 </script>
-</body></html>
+
+</body>
+</html>
 """
 
 @app.route("/")
@@ -78,32 +170,62 @@ def homepage():
 # ---------- the actual pipeline ----------
 @app.route("/talk", methods=["POST"])
 def talk():
-    if "audio" not in request.files:
-        return {"error": "no audio file received"}, 400
+    if request.content_type.startswith("multipart/form-data"):
+        input_type = request.form.get("input_type")
+        output_type = request.form.get("output_type")
+        audio = request.files.get("audio")
+    elif request.content_type.startswith("application/json"):
+        data = request.get_json()
+        input_type = data.get("input_type")
+        output_type = data.get("output_type")
+        text = data.get("text")
 
-    audio_file = request.files["audio"]
-    request_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{request_id}_{audio_file.filename}")
-    audio_file.save(input_path)
+    print(input_type)
+    print(output_type)
 
-    # ---- STEP 1: transcribe ----
-    segments, info = whisper_model.transcribe(input_path, beam_size=5)
-    heard_text = " ".join(seg.text for seg in segments).strip()
-    print(f"[talk] heard: {heard_text!r} (lang={info.language})")
+    voice_answer = 1
+    if(input_type == "audio"):
+        print("Audio received")
+        audio_file = request.files["audio"]
+        request_id = str(uuid.uuid4())
+        input_path = os.path.join(UPLOAD_DIR, f"{request_id}_{audio_file.filename}")
+        audio_file.save(input_path)
 
-    # ---- STEP 2: parse (placeholder — just acknowledging what we heard for now) ----
+        # ---- STEP 1: transcribe ----
+        print("Transcribing audio")
+        segments, info = whisper_model.transcribe(input_path, beam_size=5)
+        heard_text = " ".join(seg.text for seg in segments).strip()
+        print(f"[talk] heard: {heard_text!r} (lang={info.language})")
+        language = info.language
 
-    # ---- STEP 3: Check for commands
-    clean_text = heard_text.lower().strip().translate(str.maketrans('', '', string.punctuation))
-    command = clean_text.split()[0]
-    
+        # ---- STEP 2: Check for commands
+        print("Checking audio for commands")
+        clean_text = heard_text.lower().strip().translate(str.maketrans('', '', string.punctuation))
+        command = clean_text.split()[0]    
+    elif(input_type == "text"):
+        language = "en"
+        clean_text = text.lower().strip().translate(str.maketrans('', '', string.punctuation))
+        command = clean_text.split()[0]
+        heard_text = text
+
+
     match command.lower():
         case "parrot" | "papagailis" | "попугай":
-            reply_text = heard_text.split(command,1)[1]
+            _,_,reply_text = heard_text.partition(" ")
         case "die":
             reply_text = "Goodbye!"
+        case "send" | "aizsūti" | "отправь":
+            voice_answer = 0;
+            _,_,reply_text = heard_text.partition(" ")
+            subprocess.run([
+                "curl",
+                "-X", "PUT",
+                "-H", "Content-Type: text/plain",
+                "--data", reply_text,
+                "https://rekini.tgt.lv/TTT",
+            ], check=True)
         case _:
-            match info.language:
+            match language:
                 case "en":
                     reply_text = f"There is no such command!"
                 case "lv":
@@ -113,19 +235,28 @@ def talk():
                 case _:
                     reply_text = f"There is no such command!"
 
-    # ---- STEP 4: generate spoken reply ----
-    voice(reply_text, info.language)
 
-    # ---- STEP 5s: send the reply audio back ----
-    output_path = "output.wav"  # or your request_id path
+    if(output_type == "audio"):
+        if(voice_answer):
+            # ---- STEP 3: generate spoken reply ----
+            print("Generating spoken reply : " + reply_text)
+            voice(reply_text, language)
 
-    return send_file(
-        output_path,
-        mimetype="audio/wav"
-    )
+            # ---- STEP 4: send the reply audio back ----
+            print("Sending reply back")
+            output_path = "output.wav"  # or your request_id path
 
-    # also send text    
+            return send_file(
+                output_path,
+                mimetype="audio/wav"
+            )
+        return {"status":"sent"}  
 
+    elif(output_type == "text"):
+        print("sending text...")
+        return jsonify({
+            "text": reply_text
+        })
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=55555)

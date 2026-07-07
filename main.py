@@ -5,7 +5,6 @@ from transcribe import *
 from tts import *
 
 import os
-
 stream_setting = {
     "format": pyaudio.paInt16,
     "channels": 1,
@@ -33,7 +32,7 @@ while True:
     if(status == 0):
         break
     text,language = transcribe(filename)
-    os.remove(filename)
+    #os.remove(filename)
     if(text[-1] == "."):
         text = text[:-1]
 
@@ -48,5 +47,5 @@ while True:
     else:
         voice(text, language)
         play("output.wav")
-    os.remove("output.wav")
+    #os.remove("output.wav")
     model = Model()

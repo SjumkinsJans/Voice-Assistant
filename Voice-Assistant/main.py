@@ -37,13 +37,13 @@ while True:
     if(text[-1] == "."):
         text = text[:-1]
 
-    stra = text.lower().strip().translate(str.maketrans('', '', string.punctuation))
+    clean_text = text.lower().strip().translate(str.maketrans('', '', string.punctuation))
 
-    print(repr(stra) + " " + "hi")
-    if(stra == "hi" or stra == "hello" or stra == "hey"):
+    print(repr(clean_text) + " " + "hi")
+    if(clean_text == "hi" or clean_text == "hello" or clean_text == "hey"):
         voice("Good day Mr.Bezos", "en")
         play("output.wav")
-    elif(stra == "die"):
+    elif(clean_text == "die"):
         break
     else:
         voice(text, language)

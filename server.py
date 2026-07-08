@@ -215,14 +215,16 @@ def talk():
         case "die":
             reply_text = "Goodbye!"
         case "send" | "aizsūti" | "отправь":
-            voice_answer = 0;
+            voice_answer = 0
             _,_,reply_text = heard_text.partition(" ")
+            group = ""
+            group,_,reply_text = reply_text.partition(" ")
             subprocess.run([
                 "curl",
                 "-X", "PUT",
                 "-H", "Content-Type: text/plain",
                 "--data", reply_text,
-                "https://rekini.tgt.lv/TTT",
+                f"https://rekini.tgt.lv/{group}",
             ], check=True)
         case _:
             match language:
